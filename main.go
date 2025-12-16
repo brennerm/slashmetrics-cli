@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/spf13/cobra"
 )
 
 // Styles
@@ -46,6 +46,24 @@ var (
 	listSelectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("202"))
 	listTitleStyle        = lipgloss.NewStyle().MarginLeft(2).Bold(true).Foreground(lipgloss.Color("202"))
 )
+
+var (
+	metricFlag   string
+	intervalFlag time.Duration
+	rootCmd      = &cobra.Command{
+		Use:   "slashmetrics <url>",
+		Short: "Terminal-based Prometheus metric explorer",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runApp(args[0])
+		},
+	}
+)
+
+func init() {
+	rootCmd.Flags().StringVar(&metricFlag, "metric", "", "The metric to visualize (if empty, a random metric will be chosen)")
+	rootCmd.Flags().DurationVar(&intervalFlag, "interval", 2*time.Second, "The interval to poll for new metrics")
+}
 
 // MetricSample represents a single metric sample
 type MetricSample struct {
@@ -977,32 +995,31 @@ func (m Model) View() string {
 	return sb.String()
 }
 
-// main function
-func main() {
-	url := flag.String("url", "http://localhost:9100/metrics", "The URL to scrape metrics from")
-	metric := flag.String("metric", "", "The metric to visualize (if empty, will prompt to select one)")
-	interval := flag.Duration("interval", 2*time.Second, "The interval to poll for new metrics")
-	flag.Parse()
-
-	// If no metric specified, fetch the first available metric
-	selectedMetric := *metric
+func runApp(url string) error {
+	selectedMetric := metricFlag
 	if selectedMetric == "" {
-		metrics, err := fetchAllMetrics(*url)
+		metrics, err := fetchAllMetrics(url)
 		if err != nil {
-			fmt.Printf("Error fetching metrics: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("error fetching metrics: %w", err)
 		}
 		if len(metrics) == 0 {
-			fmt.Println("Error: No metrics found at the endpoint")
-			os.Exit(1)
+			return fmt.Errorf("no metrics found at the endpoint")
 		}
 		selectedMetric = metrics[0]
 	}
 
-	m := NewModel(*url, selectedMetric, *interval)
+	m := NewModel(url, selectedMetric, intervalFlag)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
