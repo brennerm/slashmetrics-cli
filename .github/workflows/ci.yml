@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          check-latest: true
+          go-version: 1.25.5
+      - name: Ensure formatting
+        run: gofmt -l .
+      - name: Run go vet
+        run: go vet .
+      - name: Run tests
+        run: go test -v .
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.5
+      - name: Build Linux and Darwin binaries
+        run: |
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              GOOS=$os GOARCH=$arch go build -o slashmetrics-${os}-${arch} .
+            done
+          done
+      - name: Upload linux-amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashmetrics-linux-amd64
+          path: slashmetrics-linux-amd64
+      - name: Upload linux-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashmetrics-linux-arm64
+          path: slashmetrics-linux-arm64
+      - name: Upload darwin-amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashmetrics-darwin-amd64
+          path: slashmetrics-darwin-amd64
+      - name: Upload darwin-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashmetrics-darwin-arm64
+          path: slashmetrics-darwin-arm64
