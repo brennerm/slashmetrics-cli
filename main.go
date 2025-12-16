@@ -14,6 +14,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/canvas/runes"
 	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -45,6 +46,11 @@ var (
 	listItemStyle         = lipgloss.NewStyle().PaddingLeft(2)
 	listSelectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("202"))
 	listTitleStyle        = lipgloss.NewStyle().MarginLeft(2).Bold(true).Foreground(lipgloss.Color("202"))
+)
+
+const (
+	legendBoxWidth   = 35
+	legendContentPad = 1
 )
 
 var (
@@ -144,6 +150,7 @@ type Model struct {
 	termWidth          int
 	termHeight         int
 	seriesColors       []lipgloss.Color // Colors for different series
+	legendViewport     viewport.Model   // Viewport for scrolling legend entries
 	yRangeSet          bool             // Whether Y range has been initialized
 }
 
@@ -394,6 +401,32 @@ func (m *Model) redrawChart() {
 	m.chart.DrawAll()
 }
 
+func legendInnerDimensions(totalHeight int) (int, int) {
+	width := legendBoxWidth - 2 - 2*legendContentPad
+	if width < 1 {
+		width = 1
+	}
+	height := totalHeight - 2 - 2*legendContentPad
+	if height < 1 {
+		height = 1
+	}
+	return width, height
+}
+
+func newLegendViewport(totalHeight int) viewport.Model {
+	width, height := legendInnerDimensions(totalHeight)
+	return viewport.New(width, height)
+}
+
+func (m *Model) updateLegendViewportSize() {
+	if !m.showLegend {
+		return
+	}
+	width, height := legendInnerDimensions(m.height)
+	m.legendViewport.Width = width
+	m.legendViewport.Height = height
+}
+
 // NewModel creates a new model
 func NewModel(url, metricName string, interval time.Duration) Model {
 	// Start with reasonable defaults
@@ -416,20 +449,21 @@ func NewModel(url, metricName string, interval time.Duration) Model {
 	l.Styles.Title = listTitleStyle
 
 	return Model{
-		url:          url,
-		metricName:   metricName,
-		interval:     interval,
-		chart:        chart,
-		width:        width,
-		height:       height,
-		selectMode:   false,
-		metricsList:  l,
-		termWidth:    0,
-		termHeight:   0,
-		lastValues:   make(map[string]float64),
-		dataHistory:  make(map[string][]timeserieslinechart.TimePoint),
-		seriesColors: []lipgloss.Color{"202", "46", "226", "201", "51", "208", "99", "171"},
-		yRangeSet:    false,
+		url:            url,
+		metricName:     metricName,
+		interval:       interval,
+		chart:          chart,
+		width:          width,
+		height:         height,
+		selectMode:     false,
+		metricsList:    l,
+		termWidth:      0,
+		termHeight:     0,
+		lastValues:     make(map[string]float64),
+		dataHistory:    make(map[string][]timeserieslinechart.TimePoint),
+		seriesColors:   []lipgloss.Color{"202", "46", "226", "201", "51", "208", "99", "171"},
+		legendViewport: newLegendViewport(height),
+		yRangeSet:      false,
 	}
 }
 
@@ -488,6 +522,7 @@ func (m *Model) resizeChart() {
 
 		// Use the built-in Resize function
 		m.chart.Resize(m.width, m.height)
+
 		m.chart.DrawXYAxisAndLabel()
 
 		// Redraw with existing data
@@ -497,9 +532,14 @@ func (m *Model) resizeChart() {
 			m.chart.DrawAll()
 		}
 	}
+
+	m.updateLegendViewportSize()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.showLegend {
+		m.legendViewport, _ = m.legendViewport.Update(msg)
+	}
 	// Handle TickMsg and MetricsMsg regardless of mode to keep scraping active
 	switch msg := msg.(type) {
 	case TickMsg:
@@ -910,6 +950,8 @@ func (m Model) View() string {
 	chartView := borderStyle.Render(m.chart.View())
 
 	if m.showLegend && len(m.seriesList) > 0 {
+		m.updateLegendViewportSize()
+
 		// Build legend
 		legendContent := titleStyle.Render("Legend") + "\n\n"
 
@@ -948,13 +990,16 @@ func (m Model) View() string {
 			legendContent += fmt.Sprintf("%s %s\n", indicator, legendLabel)
 		}
 
+		m.legendViewport.SetContent(legendContent)
+		legendView := m.legendViewport.View()
+
 		legend := lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("202")).
 			Padding(1).
-			Width(35).
+			Width(legendBoxWidth).
 			Height(m.height).
-			Render(legendContent)
+			Render(legendView)
 
 		// Join chart and legend horizontally
 		chartAndLegend := lipgloss.JoinHorizontal(lipgloss.Top, chartView, " ", legend)
