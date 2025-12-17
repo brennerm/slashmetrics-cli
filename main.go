@@ -401,21 +401,58 @@ func (m *Model) redrawChart() {
 	m.chart.DrawAll()
 }
 
+func (m *Model) rebuildLegend() {
+	legendContent := ""
+
+	// Iterate through seriesList to maintain consistent order
+	for _, series := range m.seriesList {
+		// Only show checked series
+		if !series.checked {
+			continue
+		}
+
+		// Check if this series has data
+		if _, exists := m.dataHistory[series.name]; !exists {
+			continue
+		}
+
+		// Get color for this series
+		colorIdx := series.colorIdx % len(m.seriesColors)
+		color := m.seriesColors[colorIdx]
+
+		// Create colored indicator
+		indicator := lipgloss.NewStyle().Foreground(color).Render("■")
+
+		// Extract only the labels part (between curly braces)
+		legendLabel := series.name
+		if idx := strings.Index(legendLabel, "{"); idx != -1 {
+			legendLabel = legendLabel[idx:]
+		} else {
+			// If it's just the metric name without labels, show a simple identifier
+			legendLabel = "{}"
+		}
+
+		// Add legend entry with truncation if too long
+		if len(legendLabel) > 30 {
+			legendLabel = legendLabel[:27] + "..."
+		}
+		legendContent += fmt.Sprintf("%s %s\n", indicator, legendLabel)
+	}
+
+	m.legendViewport.SetContent(legendContent)
+}
+
 func legendInnerDimensions(totalHeight int) (int, int) {
-	width := legendBoxWidth - 2 - 2*legendContentPad
-	if width < 1 {
-		width = 1
-	}
-	height := totalHeight - 2 - 2*legendContentPad
-	if height < 1 {
-		height = 1
-	}
+	width := max(legendBoxWidth-2-2*legendContentPad, 1)
+	height := max(totalHeight-4, 1)
 	return width, height
 }
 
 func newLegendViewport(totalHeight int) viewport.Model {
 	width, height := legendInnerDimensions(totalHeight)
-	return viewport.New(width, height)
+	viewportModel := viewport.New(width, height)
+	viewportModel.MouseWheelEnabled = true
+	return viewportModel
 }
 
 func (m *Model) updateLegendViewportSize() {
@@ -449,19 +486,24 @@ func NewModel(url, metricName string, interval time.Duration) Model {
 	l.Styles.Title = listTitleStyle
 
 	return Model{
-		url:            url,
-		metricName:     metricName,
-		interval:       interval,
-		chart:          chart,
-		width:          width,
-		height:         height,
-		selectMode:     false,
-		metricsList:    l,
-		termWidth:      0,
-		termHeight:     0,
-		lastValues:     make(map[string]float64),
-		dataHistory:    make(map[string][]timeserieslinechart.TimePoint),
-		seriesColors:   []lipgloss.Color{"202", "46", "226", "201", "51", "208", "99", "171"},
+		url:         url,
+		metricName:  metricName,
+		interval:    interval,
+		chart:       chart,
+		width:       width,
+		height:      height,
+		selectMode:  false,
+		metricsList: l,
+		termWidth:   0,
+		termHeight:  0,
+		lastValues:  make(map[string]float64),
+		dataHistory: make(map[string][]timeserieslinechart.TimePoint),
+		seriesColors: []lipgloss.Color{
+			"202", "46", "226", "201", "51", "208", "99", "171",
+			"196", "33", "214", "40", "129", "39", "160", "45",
+			"220", "135", "118", "200", "81", "227", "161", "48",
+			"57", "190", "213", "38", "154", "124", "27", "141",
+		},
 		legendViewport: newLegendViewport(height),
 		yRangeSet:      false,
 	}
@@ -482,17 +524,7 @@ func (m *Model) resizeChart() {
 		return
 	}
 
-	// Calculate available space:
-	// - Title line: 1
-	// - Subtitle line: 1
-	// - Blank line: 1
-	// - Error line (if any): 2
-	// - Current value line: 1
-	// - Blank line: 1
-	// - Border padding: 2
-	// - Help line: 2
-	// - Margin: 2
-	headerFooterHeight := 11
+	headerFooterHeight := 9
 	if m.err != nil {
 		headerFooterHeight += 2
 	}
@@ -537,9 +569,11 @@ func (m *Model) resizeChart() {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.showLegend {
-		m.legendViewport, _ = m.legendViewport.Update(msg)
-	}
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+
 	// Handle TickMsg and MetricsMsg regardless of mode to keep scraping active
 	switch msg := msg.(type) {
 	case TickMsg:
@@ -694,6 +728,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.seriesSelectMode = false
 				// Redraw chart with updated series visibility
 				m.redrawChart()
+				m.rebuildLegend()
 				return m, nil
 			case " ":
 				// Toggle selected item
@@ -774,6 +809,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.seriesListScroll = 0
 				}
 				m.metricsList.ResetFilter()
+				m.rebuildLegend()
 				m.selectMode = false
 				return m, tea.Batch(
 					fetchMetricCmd(m.url, m.metricName),
@@ -808,7 +844,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Pass all other messages to the list (including filter updates)
-		var cmd tea.Cmd
 		m.metricsList, cmd = m.metricsList.Update(msg)
 		return m, cmd
 	}
@@ -826,9 +861,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			// Toggle legend display
 			m.showLegend = !m.showLegend
+			m.rebuildLegend()
 			// Resize chart to accommodate legend
 			m.resizeChart()
-			return m, nil
 		case "s":
 			// Enter series selection mode
 			if len(m.dataHistory) > 0 {
@@ -836,16 +871,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.seriesListSelected = 0
 				m.seriesListScroll = 0
 			}
-			return m, nil
 		case "r":
 			// Reset the chart
 			m.chart.ClearAllData()
 			m.chart.Clear()
 			m.chart.DrawXYAxisAndLabel()
 			return m, nil
-		case "up", "down", "left", "right", "pgup", "pgdown":
-			m.chart, _ = m.chart.Update(msg)
-			m.chart.Draw()
 		}
 
 	case tea.WindowSizeMsg:
@@ -857,10 +888,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Resize the list too
 			m.metricsList.SetSize(msg.Width-4, msg.Height-10)
 		}
-		return m, nil
 	}
 
-	return m, nil
+	if m.showLegend {
+		m.legendViewport, cmd = m.legendViewport.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) View() string {
@@ -889,7 +924,7 @@ func (m Model) View() string {
 	)
 
 	sb.WriteString(header)
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 
 	// Show select mode if active
 	if m.selectMode {
@@ -951,55 +986,22 @@ func (m Model) View() string {
 
 	if m.showLegend && len(m.seriesList) > 0 {
 		m.updateLegendViewportSize()
-
-		// Build legend
-		legendContent := titleStyle.Render("Legend") + "\n\n"
-
-		// Iterate through seriesList to maintain consistent order
-		for _, series := range m.seriesList {
-			// Only show checked series
-			if !series.checked {
-				continue
-			}
-
-			// Check if this series has data (all series now use their full name as key)
-			if _, exists := m.dataHistory[series.name]; !exists {
-				continue
-			}
-
-			// Get color for this series
-			colorIdx := series.colorIdx % len(m.seriesColors)
-			color := m.seriesColors[colorIdx]
-
-			// Create colored indicator
-			indicator := lipgloss.NewStyle().Foreground(color).Render("●")
-
-			// Extract only the labels part (between curly braces)
-			legendLabel := series.name
-			if idx := strings.Index(series.name, "{"); idx != -1 {
-				legendLabel = series.name[idx:]
-			} else {
-				// If it's just the metric name without labels, show a simple identifier
-				legendLabel = "{}"
-			}
-
-			// Add legend entry with truncation if too long
-			if len(legendLabel) > 30 {
-				legendLabel = legendLabel[:27] + "..."
-			}
-			legendContent += fmt.Sprintf("%s %s\n", indicator, legendLabel)
-		}
-
-		m.legendViewport.SetContent(legendContent)
+		legendHeader := titleStyle.Render("Legend") + "\n"
 		legendView := m.legendViewport.View()
 
-		legend := lipgloss.NewStyle().
+		legend := lipgloss.JoinVertical(
+			lipgloss.Left,
+			legendHeader,
+			legendView,
+		)
+
+		legend = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("202")).
 			Padding(1).
 			Width(legendBoxWidth).
 			Height(m.height).
-			Render(legendView)
+			Render(legend)
 
 		// Join chart and legend horizontally
 		chartAndLegend := lipgloss.JoinHorizontal(lipgloss.Top, chartView, " ", legend)
@@ -1011,9 +1013,9 @@ func (m Model) View() string {
 	}
 
 	// Calculate remaining vertical space to push help bar to bottom
-	// Count lines: logo (4) + 2 newlines after header + chart (m.height) + chart borders (~2)
+	// Count lines: logo (4) + 1 newlines after header + chart (m.height) + chart borders (~2)
 	// The title section adds to logo lines (JoinHorizontal keeps max height)
-	usedLines := 4 + 2 + m.height + 2 + 0          // +1 for help bar
+	usedLines := 4 + 1 + m.height + 2 + 0          // +1 for help bar
 	remainingLines := m.termHeight - usedLines - 0 // -3 to account for the extra lines
 	if remainingLines > 0 {
 		sb.WriteString(strings.Repeat("\n", remainingLines))
@@ -1027,8 +1029,10 @@ func (m Model) View() string {
 		keyStyle.Render("m") + valStyle.Render("Metrics") + "  " +
 		keyStyle.Render("s") + valStyle.Render("Series") + "  " +
 		keyStyle.Render("l") + valStyle.Render("Legend") + "  " +
-		keyStyle.Render("r") + valStyle.Render("Reset") + "  " +
-		keyStyle.Render("↑↓") + valStyle.Render("Navigate")
+		keyStyle.Render("r") + valStyle.Render("Reset")
+	if m.showLegend && m.legendViewport.TotalLineCount() > m.legendViewport.VisibleLineCount() {
+		helpContent += "  " + keyStyle.Render("↑↓") + valStyle.Render("Scroll")
+	}
 
 	helpBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("15")).
@@ -1054,7 +1058,16 @@ func runApp(url string) error {
 	}
 
 	m := NewModel(url, selectedMetric, intervalFlag)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+
+	if len(os.Getenv("DEBUG")) > 0 {
+		f, err := tea.LogToFile("debug.log", "debug")
+		if err != nil {
+			fmt.Println("fatal:", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+	}
 
 	if _, err := p.Run(); err != nil {
 		return err
