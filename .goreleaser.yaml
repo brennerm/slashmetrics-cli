@@ -1,5 +1,7 @@
 version: 2
 
+project_name: slashmetrics
+
 before:
   hooks:
     - go mod tidy
@@ -30,6 +32,16 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^ci:"
+
+  groups:
+    - title: "Features ✨"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Bug fixes 🐞"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
 
 release:
   header: |
