@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 )
 
@@ -24,28 +25,28 @@ import (
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("202"))
+			Foreground(lipgloss.Color("#ff5f00"))
 
 	borderStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("202"))
+			BorderForeground(lipgloss.Color("#ff5f00"))
 
 	graphStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("202"))
+			Foreground(lipgloss.Color("#ff5f00"))
 
 	axisStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(lipgloss.Color("#808080"))
 
 	labelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("15"))
+			Foreground(lipgloss.Color("#c6c6c6"))
 
 	helpStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("0")).
 			Foreground(lipgloss.Color("15"))
 
 	listItemStyle         = lipgloss.NewStyle().PaddingLeft(2)
-	listSelectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("202"))
-	listTitleStyle        = lipgloss.NewStyle().MarginLeft(2).Bold(true).Foreground(lipgloss.Color("202"))
+	listSelectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("#ff5f00"))
+	listTitleStyle        = lipgloss.NewStyle().MarginLeft(2).Bold(true).Foreground(lipgloss.Color("#ff5f00"))
 )
 
 const (
@@ -146,6 +147,7 @@ type Model struct {
 	seriesList         []seriesItem // List of available series
 	seriesListScroll   int          // Scroll position in series list
 	seriesListSelected int          // Currently selected item in series list
+	hoveredSeries      int          // Currently hovered series in legend
 	showLegend         bool         // Whether to show the legend
 	termWidth          int
 	termHeight         int
@@ -405,7 +407,7 @@ func (m *Model) rebuildLegend() {
 	legendContent := ""
 
 	// Iterate through seriesList to maintain consistent order
-	for _, series := range m.seriesList {
+	for i, series := range m.seriesList {
 		// Only show checked series
 		if !series.checked {
 			continue
@@ -425,17 +427,21 @@ func (m *Model) rebuildLegend() {
 
 		// Extract only the labels part (between curly braces)
 		legendLabel := series.name
-		if idx := strings.Index(legendLabel, "{"); idx != -1 {
+
+		// use metric name if no labels
+		if strings.HasSuffix(legendLabel, "{}") {
+			legendLabel = strings.TrimSuffix(legendLabel, "{}")
+		} else if idx := strings.Index(legendLabel, "{"); idx != -1 {
 			legendLabel = legendLabel[idx:]
-		} else {
-			// If it's just the metric name without labels, show a simple identifier
-			legendLabel = "{}"
 		}
 
 		// Add legend entry with truncation if too long
 		if len(legendLabel) > 30 {
 			legendLabel = legendLabel[:27] + "..."
 		}
+
+		legendLabel = zone.Mark("series-"+fmt.Sprintf("%d", i), legendLabel)
+
 		legendContent += fmt.Sprintf("%s %s\n", indicator, legendLabel)
 	}
 
@@ -499,13 +505,14 @@ func NewModel(url, metricName string, interval time.Duration) Model {
 		lastValues:  make(map[string]float64),
 		dataHistory: make(map[string][]timeserieslinechart.TimePoint),
 		seriesColors: []lipgloss.Color{
-			"202", "46", "226", "201", "51", "208", "99", "171",
+			"#ff5f00", "46", "226", "201", "51", "208", "99", "171",
 			"196", "33", "214", "40", "129", "39", "160", "45",
 			"220", "135", "118", "200", "81", "227", "161", "48",
 			"57", "190", "213", "38", "154", "124", "27", "141",
 		},
 		legendViewport: newLegendViewport(height),
 		yRangeSet:      false,
+		hoveredSeries:  -1,
 	}
 }
 
@@ -606,6 +613,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Update series list when new samples arrive
+		newSeriesAdded := false
 		if len(msg.Samples) > 0 {
 			// Check if we need to add new series to the list
 			existingSeries := make(map[string]bool)
@@ -622,6 +630,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						checked:  true,
 						colorIdx: len(m.seriesList),
 					})
+					newSeriesAdded = true
 					existingSeries[displayName] = true
 				}
 			}
@@ -677,31 +686,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Check if this series is checked (visible) and get its color index
 			isChecked := true
-			colorIdx := i % len(m.seriesColors) // fallback if not found in seriesList
+			color := m.seriesColors[i%len(m.seriesColors)] // fallback if not found in seriesList
 			if len(m.seriesList) > 0 {
 				isChecked = false
-				for _, s := range m.seriesList {
+				for i, s := range m.seriesList {
 					if s.name == displayName {
 						isChecked = s.checked
-						colorIdx = s.colorIdx
+
+						// properly get color based on hover state
+						if m.hoveredSeries == -1 || m.hoveredSeries == i {
+							color = m.seriesColors[s.colorIdx%len(m.seriesColors)]
+						} else {
+							color = lipgloss.Color("#808080")
+						}
+
 						break
 					}
 				}
 			}
 
-			// Use full name for all series - all use named datasets now
 			datasetName := displayName
 			m.dataHistory[datasetName] = append(m.dataHistory[datasetName], point)
 
 			// Set style for this dataset
-			colorIdx = colorIdx % len(m.seriesColors)
-			style := lipgloss.NewStyle().Foreground(m.seriesColors[colorIdx])
+			style := lipgloss.NewStyle().Foreground(color)
 			m.chart.SetDataSetStyle(datasetName, style)
 			m.chart.SetDataSetLineStyle(datasetName, runes.ThinLineStyle)
 
 			if isChecked {
 				m.chart.PushDataSet(datasetName, point)
 			}
+		}
+
+		// rebuild after adding history data
+		if newSeriesAdded {
+			m.rebuildLegend()
 		}
 
 		// Draw the chart (only if not in series selection mode)
@@ -809,7 +828,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.seriesListScroll = 0
 				}
 				m.metricsList.ResetFilter()
-				m.rebuildLegend()
 				m.selectMode = false
 				return m, tea.Batch(
 					fetchMetricCmd(m.url, m.metricName),
@@ -859,9 +877,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectMode = true
 			return m, fetchAllMetricsCmd(m.url)
 		case "l":
+			// Rebuild legend before toggling
+			m.rebuildLegend()
 			// Toggle legend display
 			m.showLegend = !m.showLegend
-			m.rebuildLegend()
 			// Resize chart to accommodate legend
 			m.resizeChart()
 		case "s":
@@ -893,6 +912,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.showLegend {
 		m.legendViewport, cmd = m.legendViewport.Update(msg)
 		cmds = append(cmds, cmd)
+
+		switch msg := msg.(type) {
+		case tea.MouseMsg:
+			if msg.Action == tea.MouseActionMotion {
+				for i, series := range m.seriesList {
+					if !series.checked {
+						continue
+					}
+
+					zoneID := "series-" + fmt.Sprintf("%d", i)
+
+					if zone.Get(zoneID).InBounds(msg) {
+						// we have a catch - highlight this series
+						m.hoveredSeries = i
+
+						for i, series := range m.seriesList {
+							color := lipgloss.Color("#808080")
+
+							if m.hoveredSeries == i {
+								color = m.seriesColors[series.colorIdx%len(m.seriesColors)]
+							}
+
+							style := lipgloss.NewStyle().Foreground(color)
+							m.chart.SetDataSetStyle(series.name, style)
+						}
+
+						m.chart.DrawAll()
+
+						return m, nil
+					}
+				}
+
+				// No match - clear highlight
+				m.hoveredSeries = -1
+			}
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -902,7 +957,7 @@ func (m Model) View() string {
 	var sb strings.Builder
 
 	// ASCII art logo
-	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("202")).Render(
+	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f00")).Render(
 		"     __            __      _          \n" +
 			"    / / __ _  ___ / /_____(_)______   \n" +
 			"   / / /  ' \\/ -_) __/ __/ / __(_-<   \n" +
@@ -986,7 +1041,7 @@ func (m Model) View() string {
 
 	if m.showLegend && len(m.seriesList) > 0 {
 		m.updateLegendViewportSize()
-		legendHeader := titleStyle.Render("Legend") + "\n"
+		legendHeader := zone.Mark("legend", titleStyle.Render("Legend")) + "\n"
 		legendView := m.legendViewport.View()
 
 		legend := lipgloss.JoinVertical(
@@ -997,7 +1052,7 @@ func (m Model) View() string {
 
 		legend = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("202")).
+			BorderForeground(lipgloss.Color("#ff5f00")).
 			Padding(1).
 			Width(legendBoxWidth).
 			Height(m.height).
@@ -1041,7 +1096,7 @@ func (m Model) View() string {
 		Render(helpContent)
 	sb.WriteString(helpBar)
 
-	return sb.String()
+	return zone.Scan(sb.String())
 }
 
 func runApp(url string) error {
@@ -1056,6 +1111,8 @@ func runApp(url string) error {
 		}
 		selectedMetric = metrics[0]
 	}
+
+	zone.NewGlobal()
 
 	m := NewModel(url, selectedMetric, intervalFlag)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
