@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io"
-	"net/http"
+	"math"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,9 +20,11 @@ import (
 
 // Styles
 var (
-	titleStyle = lipgloss.NewStyle().
+	backgroundColor = lipgloss.Color("#282A35")
+	defaultStyle    = lipgloss.NewStyle().Background(backgroundColor)
+	titleStyle      = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#ff5f00"))
+			Foreground(lipgloss.Color("#ff5f00")).Background(backgroundColor)
 
 	borderStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -154,164 +153,6 @@ type Model struct {
 	seriesColors       []lipgloss.Color // Colors for different series
 	legendViewport     viewport.Model   // Viewport for scrolling legend entries
 	yRangeSet          bool             // Whether Y range has been initialized
-}
-
-// fetchAllMetrics fetches all available metric names from the endpoint
-func fetchAllMetrics(url string) ([]string, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch metrics: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	metrics := make(map[string]bool)
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Skip comments and empty lines
-		if strings.HasPrefix(line, "#") || len(strings.TrimSpace(line)) == 0 {
-			continue
-		}
-
-		// Extract metric name
-		name, _, ok := parseMetricLine(line)
-		if ok {
-			metrics[name] = true
-		}
-	}
-
-	// Convert map to sorted slice
-	result := make([]string, 0, len(metrics))
-	for name := range metrics {
-		result = append(result, name)
-	}
-	sort.Strings(result)
-
-	return result, nil
-}
-
-// fetchAllMetricSeries fetches all series for a specific metric from the Prometheus endpoint
-func fetchAllMetricSeries(url, metricName string) ([]MetricSample, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch metrics: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	var samples []MetricSample
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Skip comments and empty lines
-		if strings.HasPrefix(line, "#") || len(strings.TrimSpace(line)) == 0 {
-			continue
-		}
-
-		// Parse metric line
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-
-		fullName := parts[0]
-		baseName := fullName
-
-		// Extract base name if labels present
-		if idx := strings.Index(fullName, "{"); idx != -1 {
-			baseName = fullName[:idx]
-		}
-
-		// Check if this is the metric we're looking for
-		if baseName != metricName {
-			continue
-		}
-
-		// Parse value
-		valueStr := parts[len(parts)-1]
-		val, err := strconv.ParseFloat(valueStr, 64)
-		if err != nil {
-			if len(parts) >= 3 {
-				valueStr = parts[len(parts)-2]
-				val, err = strconv.ParseFloat(valueStr, 64)
-				if err != nil {
-					continue
-				}
-			} else {
-				continue
-			}
-		}
-
-		// If no labels, add empty labels
-		if !strings.Contains(fullName, "{") {
-			fullName = fullName + "{}"
-		}
-
-		samples = append(samples, MetricSample{
-			FullName: fullName,
-			Value:    val,
-		})
-	}
-
-	if len(samples) == 0 {
-		return nil, fmt.Errorf("metric %q not found", metricName)
-	}
-
-	return samples, nil
-}
-
-// parseMetricLine parses a single Prometheus metric line
-func parseMetricLine(line string) (name string, value float64, ok bool) {
-	// Handle metric with labels: metric_name{label="value"} 123.45
-	// Handle metric without labels: metric_name 123.45
-
-	parts := strings.Fields(line)
-	if len(parts) < 2 {
-		return "", 0, false
-	}
-
-	// Last field is the value (sometimes timestamp follows, but we ignore it)
-	valueStr := parts[len(parts)-1]
-
-	// Check if second to last might be the value (if timestamp is present)
-	val, err := strconv.ParseFloat(valueStr, 64)
-	if err != nil {
-		if len(parts) >= 3 {
-			valueStr = parts[len(parts)-2]
-			val, err = strconv.ParseFloat(valueStr, 64)
-			if err != nil {
-				return "", 0, false
-			}
-		} else {
-			return "", 0, false
-		}
-	}
-
-	// Extract metric name (everything before the space and value)
-	name = parts[0]
-	// If there are labels, extract just the base name for matching
-	if idx := strings.Index(name, "{"); idx != -1 {
-		return name[:idx], val, true
-	}
-
-	return name, val, true
-}
-
-// abs returns the absolute value of a float64
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 // fetchMetricCmd returns a command that fetches metrics
@@ -661,7 +502,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					maxY = 1
 				} else {
 					// Create a 10% range around the value
-					delta := abs(minVal) * 0.1
+					delta := math.Abs(minVal) * 0.1
 					minY = minVal - delta
 					maxY = maxVal + delta
 				}
@@ -782,10 +623,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.seriesListSelected < len(m.seriesList)-1 {
 					m.seriesListSelected++
 					// Adjust scroll if needed
-					maxVisible := m.termHeight - 12
-					if maxVisible < 3 {
-						maxVisible = 3
-					}
+					maxVisible := max(m.termHeight-12, 3)
 					if m.seriesListSelected >= m.seriesListScroll+maxVisible {
 						m.seriesListScroll = m.seriesListSelected - maxVisible + 1
 					}
@@ -1090,13 +928,13 @@ func (m Model) View() string {
 	}
 
 	helpBar := lipgloss.NewStyle().
-		Background(lipgloss.Color("15")).
+		Background(lipgloss.Color(backgroundColor)).
 		Foreground(lipgloss.Color("0")).
 		Width(m.termWidth).
 		Render(helpContent)
 	sb.WriteString(helpBar)
 
-	return zone.Scan(sb.String())
+	return zone.Scan(defaultStyle.Render(sb.String()))
 }
 
 func runApp(url string) error {
